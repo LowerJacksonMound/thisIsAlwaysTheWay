@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/script_utils.sh"
+# Get the directory of the current script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/script_utils.sh"
 
 usage() {
-  log "Usage: $(basename "$0") <output_dir> --keywords <keywords> --selection <selection>"
-  log "  Download music from YouTube using Google OAuth 2.0"
-  log "  output_dir: Directory to save downloaded files"
-  log "  keywords: Search terms for finding music"
-  log "  selection: Specific selection criteria (e.g., 'first', 'popular')"
+  log "Usage: $(basename "$0") <output_dir> [OPTIONS]"
+  log "Options:"
+  log "  --keywords <keywords>    : Search keywords (required)"
+  log "  --selection <selection>  : Selection criteria (required)"
+  log "  --env-file <env_file>    : Path to .env file (default: .env in script directory)"
+  log "  --limit <count>          : Maximum number of videos to download (default: 5)"
   exit 1
 }
 
 main() {
   if [[ $# -lt 1 ]]; then
-    log "ERROR: Missing required arguments"
     usage
   fi
 
@@ -21,6 +23,8 @@ main() {
 
   local KEYWORDS=""
   local SELECTION=""
+  local ENV_FILE="${SCRIPT_DIR}/.env"
+  local LIMIT=5
 
   # Parse options
   while [[ $# -gt 0 ]]; do
@@ -33,154 +37,69 @@ main() {
         SELECTION="$2"
         shift 2
         ;;
+      --env-file)
+        ENV_FILE="$2"
+        shift 2
+        ;;
+      --limit)
+        LIMIT="$2"
+        shift 2
+        ;;
       *)
-        log "ERROR: Unknown option: $1"
         usage
         ;;
     esac
   done
 
   if [[ -z "$KEYWORDS" || -z "$SELECTION" ]]; then
-    log "ERROR: --keywords and --selection are required."
+    log "Error: --keywords and --selection are required."
     usage
   fi
 
-  mkdir -p "${OUTPUT_DIR}" || {
-    log "ERROR: Failed to create output directory '${OUTPUT_DIR}'"
-    exit 1
-  }
+  # Load environment variables
+  load_env "$ENV_FILE"
   
-  log "INFO: Downloading music: keywords='${KEYWORDS}', selection='${SELECTION}', output='${OUTPUT_DIR}'"
-
-  # Check for credentials
-  if [[ ! -f "${HOME}/.google_oauth_credentials.json" ]]; then
-    log "ERROR: Google OAuth credentials not found. Please run setup_google_oauth.sh first."
+  # Check for required API key
+  check_api_key "YOUTUBE_API_KEY" || exit 1
+  
+  # Check if youtube-dl is installed
+  if ! command -v youtube-dl &> /dev/null; then
+    log "Error: youtube-dl is not installed. Run install_dependencies.sh first."
     exit 1
   fi
 
-  # Use the YouTube Data API with OAuth 2.0 via Python script
-  python3 -c "
-import os
-import sys
-import google.oauth2.credentials
-import google_auth_oauthlib.flow
-import googleapiclient.discovery
-import googleapiclient.errors
-import json
-import subprocess
-
-def download_video(video_id, output_dir):
-    url = f'https://www.youtube.com/watch?v={video_id}'
-    output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
-    
-    # Using yt-dlp (more maintained fork of youtube-dl)
-    proc = subprocess.Popen(
-        ['yt-dlp', '--extract-audio', '--audio-format', 'mp3', 
-         '--audio-quality', '0', '-o', output_template, url],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    
-    # Stream output to our logging
-    for line in proc.stdout:
-        print(f'YT-DLP: {line.strip()}')
-    
-    returncode = proc.wait()
-    if returncode != 0:
-        for line in proc.stderr:
-            print(f'YT-DLP ERROR: {line.strip()}')
-        raise Exception(f'Failed to download video {video_id}')
-    
-    print(f'SUCCESS: Downloaded video {video_id}')
-
-try:
-    # Load credentials
-    with open(os.path.expanduser('~/.google_oauth_credentials.json'), 'r') as f:
-        creds_data = json.load(f)
-    
-    credentials = google.oauth2.credentials.Credentials(
-        token=creds_data.get('token'),
-        refresh_token=creds_data.get('refresh_token'),
-        token_uri=creds_data.get('token_uri'),
-        client_id=creds_data.get('client_id'),
-        client_secret=creds_data.get('client_secret')
-    )
-    
-    # Create YouTube API client
-    youtube = googleapiclient.discovery.build('youtube', 'v3', credentials=credentials)
-    
-    # Search for videos
-    keywords = '${KEYWORDS}'
-    selection = '${SELECTION}'
-    output_dir = '${OUTPUT_DIR}'
-    
-    print(f'INFO: Searching YouTube for \"{keywords}\"')
-    request = youtube.search().list(
-        part='snippet',
-        q=keywords,
-        type='video',
-        maxResults=10,
-        videoCategoryId='10'  # Music category
-    )
-    response = request.execute()
-    
-    # Process results based on selection criteria
-    if not response.get('items'):
-        print('WARNING: No results found')
-        sys.exit(0)
-    
-    selected_video = None
-    if selection.lower() == 'first':
-        selected_video = response['items'][0]
-    elif selection.lower() == 'popular':
-        # Get video stats to find the most popular
-        video_ids = [item['id']['videoId'] for item in response['items']]
-        videos_request = youtube.videos().list(
-            part='statistics',
-            id=','.join(video_ids)
-        )
-        videos_response = videos_request.execute()
-        
-        # Find the video with the most views
-        max_views = 0
-        max_views_index = 0
-        for i, video in enumerate(videos_response['items']):
-            views = int(video['statistics'].get('viewCount', 0))
-            if views > max_views:
-                max_views = views
-                max_views_index = i
-        
-        selected_video = response['items'][max_views_index]
-    else:
-        # Try to interpret selection as an index
-        try:
-            index = int(selection) - 1
-            if 0 <= index < len(response['items']):
-                selected_video = response['items'][index]
-            else:
-                print(f'ERROR: Selection index {index+1} out of range')
-                sys.exit(1)
-        except ValueError:
-            print(f'ERROR: Unknown selection criteria: {selection}')
-            sys.exit(1)
-    
-    if selected_video:
-        video_id = selected_video['id']['videoId']
-        video_title = selected_video['snippet']['title']
-        print(f'INFO: Selected video: \"{video_title}\" (ID: {video_id})')
-        download_video(video_id, output_dir)
-    else:
-        print('ERROR: Failed to select a video')
-        sys.exit(1)
-        
-except Exception as e:
-    print(f'ERROR: {str(e)}')
-    sys.exit(1)
-" || {
-    log "ERROR: Music download failed"
+  mkdir -p "${OUTPUT_DIR}" || {
+    log "Error: Failed to create output directory ${OUTPUT_DIR}"
     exit 1
   }
+  
+  log "Downloading music: keywords='${KEYWORDS}', selection='${SELECTION}', output='${OUTPUT_DIR}', limit=${LIMIT}"
+  
+  # Construct search URL with API key
+  local SEARCH_URL="https://www.googleapis.com/youtube/v3/search?part=snippet&q=${KEYWORDS// /+}&type=video&key=${YOUTUBE_API_KEY}&maxResults=${LIMIT}"
+  
+  # Get video IDs
+  local VIDEO_IDS
+  VIDEO_IDS=$(curl -s "$SEARCH_URL" | jq -r '.items[] | select(.snippet.title | contains("'"${SELECTION}"'")) | .id.videoId')
+  
+  if [[ -z "$VIDEO_IDS" ]]; then
+    log "Error: No videos found matching criteria"
+    exit 1
+  fi
+  
+  # Download each video
+  for video_id in $VIDEO_IDS; do
+    log "Downloading video ID: ${video_id}"
+    youtube-dl "https://www.youtube.com/watch?v=${video_id}" \
+      -o "${OUTPUT_DIR}/%(title)s.%(ext)s" \
+      --extract-audio \
+      --audio-format mp3 \
+      --audio-quality 0 || {
+        log "Warning: Failed to download video ID ${video_id}, continuing..."
+      }
+  done
 
-  log "SUCCESS: Music download completed"
+  log "Music download completed successfully"
 }
 
 main "$@"

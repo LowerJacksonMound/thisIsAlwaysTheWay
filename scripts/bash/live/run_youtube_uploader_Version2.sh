@@ -1,77 +1,71 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/script_utils.sh"
+# Get the directory of the current script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/script_utils.sh"
 
 usage() {
-  log "Usage: $(basename "$0") -d VIDEO_DIR -k KEYWORDS -s SELECTION"
-  log "  -d VIDEO_DIR   Directory to store downloaded videos (default: $HOME/Videos/ToUpload)"
-  log "  -k KEYWORDS    Search keywords for YouTube videos"
-  log "  -s SELECTION   Selection criteria (first, popular, or number)"
+  log "Usage: $(basename "$0") -d VIDEO_DIR -k KEYWORDS -s SELECTION [-e ENV_FILE]"
+  log "  -d VIDEO_DIR   : Directory for video files (default: $HOME/Videos/ToUpload)"
+  log "  -k KEYWORDS    : Keywords for search"
+  log "  -s SELECTION   : Selection criteria"
+  log "  -e ENV_FILE    : Path to .env file (default: .env in script directory)"
   exit 1
 }
 
 VIDEO_DIR="$HOME/Videos/ToUpload"
 KEYWORDS=""
 SELECTION=""
+ENV_FILE="${SCRIPT_DIR}/.env"
 
 # Parse options
-while getopts ":d:k:s:h" opt; do
+while getopts ":d:k:s:e:" opt; do
   case "${opt}" in
     d) VIDEO_DIR="${OPTARG}" ;;
     k) KEYWORDS="${OPTARG}" ;;
     s) SELECTION="${OPTARG}" ;;
-    h) usage ;;
-    *) log "ERROR: Invalid option: -${OPTARG}"; usage ;;
+    e) ENV_FILE="${OPTARG}" ;;
+    *) usage ;;
   esac
 done
 shift $((OPTIND - 1))
 
 main() {
   if [[ -z "${KEYWORDS}" || -z "${SELECTION}" ]]; then
-    log "ERROR: Keywords (-k) and selection criteria (-s) are required"
     usage
   fi
 
-  mkdir -p "${VIDEO_DIR}" || {
-    log "ERROR: Failed to create video directory: ${VIDEO_DIR}"
+  # Load environment variables
+  load_env "$ENV_FILE"
+  
+  # Check required API keys
+  check_api_key "YOUTUBE_API_KEY" || exit 1
+  check_api_key "DOWNLOAD_API_KEY" || exit 1
+  
+  # Create directory if it doesn't exist
+  mkdir -p "${VIDEO_DIR}"
+  
+  # Check if music_downloader.py exists
+  local downloader="${SCRIPT_DIR}/music_downloader.py"
+  if [[ ! -f "$downloader" ]]; then
+    log "Error: music_downloader.py not found at ${downloader}"
     exit 1
-  }
+  fi
   
-  log "INFO: Starting YouTube downloader with:"
-  log "INFO: - Video directory: ${VIDEO_DIR}"
-  log "INFO: - Keywords: ${KEYWORDS}"
-  log "INFO: - Selection: ${SELECTION}"
+  log "Downloading music to '${VIDEO_DIR}' with keywords '${KEYWORDS}' (selection: '${SELECTION}')..."
   
-  # Check if OAuth credentials exist
-  if [[ ! -f "${HOME}/.google_oauth_credentials.json" ]]; then
-    log "ERROR: Google OAuth 2.0 credentials not found. Please run setup_google_oauth.sh first."
+  # Run the Python script with proper environment variables
+  YOUTUBE_API_KEY="${YOUTUBE_API_KEY}" \
+  DOWNLOAD_API_KEY="${DOWNLOAD_API_KEY}" \
+  python "${downloader}" "${VIDEO_DIR}" \
+    --keywords "${KEYWORDS}" \
+    --selection "${SELECTION}"
+    
+  if [[ $? -ne 0 ]]; then
+    log "Error: Download failed"
     exit 1
-  }
+  fi
   
-  # Call the music_downloader.sh script with proper arguments
-  local DOWNLOADER_SCRIPT
-  DOWNLOADER_SCRIPT="$(dirname "$0")/music_downloader.sh"
-  
-  if [[ ! -x "${DOWNLOADER_SCRIPT}" ]]; then
-    log "ERROR: ${DOWNLOADER_SCRIPT} not found or not executable"
-    if [[ -f "${DOWNLOADER_SCRIPT}" ]]; then
-      log "INFO: Attempting to make script executable..."
-      chmod +x "${DOWNLOADER_SCRIPT}" || {
-        log "ERROR: Failed to make script executable"
-        exit 1
-      }
-    else
-      log "ERROR: Script file does not exist"
-      exit 1
-    fi
-  }
-  
-  log "INFO: Executing ${DOWNLOADER_SCRIPT}"
-  "${DOWNLOADER_SCRIPT}" "${VIDEO_DIR}" --keywords "${KEYWORDS}" --selection "${SELECTION}" || {
-    log "ERROR: Download failed with exit code $?"
-    exit 1
-  }
-  
-  log "SUCCESS: YouTube download completed"
+  log "Download completed successfully"
 }
 
 main "$@"

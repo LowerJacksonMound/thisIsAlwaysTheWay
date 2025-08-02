@@ -1,56 +1,78 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/script_utils.sh"
+# Get the directory of the current script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/script_utils.sh"
 
 usage() {
-  log "Usage: $(basename "$0") [input_dir] [output_dir]"
-  log "  Executes the runway_to_topaz.sh script with the specified directories"
-  log "  If no directories are provided, defaults will be used"
+  log "Usage: $(basename "$0") [-e ENV_FILE] [-i INPUT_FILE] [-o OUTPUT_DIR]"
+  log "  -e ENV_FILE   : Path to .env file (default: .env in script directory)"
+  log "  -i INPUT_FILE : Input file to process (optional)"
+  log "  -o OUTPUT_DIR : Output directory (optional)"
   exit 1
 }
 
+ENV_FILE="${SCRIPT_DIR}/.env"
+INPUT_FILE=""
+OUTPUT_DIR=""
+
+# Parse options
+while getopts ":e:i:o:" opt; do
+  case "${opt}" in
+    e) ENV_FILE="${OPTARG}" ;;
+    i) INPUT_FILE="${OPTARG}" ;;
+    o) OUTPUT_DIR="${OPTARG}" ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+
 main() {
-  local SCRIPT
-  SCRIPT="$(dirname "$0")/runway_to_topaz.sh"
+  # Load environment variables
+  load_env "$ENV_FILE"
   
-  local INPUT_DIR="${1:-${HOME}/Videos/Input}"
-  local OUTPUT_DIR="${2:-${HOME}/Videos/Output}"
+  # Check required API keys
+  check_api_key "RUNWAY_API_KEY" || exit 1
+  check_api_key "TOPAZ_API_KEY" || exit 1
+  
+  local SCRIPT="${SCRIPT_DIR}/runway_to_topaz.sh"
 
   if [[ ! -x "${SCRIPT}" ]]; then
-    log "ERROR: ${SCRIPT} not found or not executable"
-    log "INFO: Attempting to make script executable..."
-    
-    if [[ -f "${SCRIPT}" ]]; then
-      chmod +x "${SCRIPT}" || {
-        log "ERROR: Failed to make script executable"
-        exit 1
-      }
-      log "SUCCESS: Made script executable"
-    else
-      log "ERROR: Script file does not exist"
-      exit 1
-    fi
+    log "Error: ${SCRIPT} not found or not executable"
+    log "Try running make_runway_to_topaz_executable.sh first"
+    exit 1
   fi
 
-  log "INFO: Executing ${SCRIPT} with input='${INPUT_DIR}' output='${OUTPUT_DIR}'"
+  log "Executing ${SCRIPT}"
   
-  # Create directories if they don't exist
-  mkdir -p "${INPUT_DIR}" || {
-    log "ERROR: Failed to create input directory: ${INPUT_DIR}"
-    exit 1
-  }
+  # Build command with optional arguments
+  local cmd=("${SCRIPT}")
   
-  mkdir -p "${OUTPUT_DIR}" || {
-    log "ERROR: Failed to create output directory: ${OUTPUT_DIR}"
-    exit 1
-  }
+  if [[ -n "${INPUT_FILE}" ]]; then
+    if [[ ! -f "${INPUT_FILE}" ]]; then
+      log "Error: Input file ${INPUT_FILE} does not exist"
+      exit 1
+    fi
+    cmd+=("-i" "${INPUT_FILE}")
+  fi
   
-  # Execute the script with proper arguments
-  "${SCRIPT}" "${INPUT_DIR}" "${OUTPUT_DIR}" || {
-    log "ERROR: Script execution failed with exit code $?"
-    exit 1
-  }
+  if [[ -n "${OUTPUT_DIR}" ]]; then
+    mkdir -p "${OUTPUT_DIR}"
+    cmd+=("-o" "${OUTPUT_DIR}")
+  fi
   
-  log "SUCCESS: Execution of ${SCRIPT} completed"
+  # Execute with environment variables exported
+  export RUNWAY_API_KEY
+  export TOPAZ_API_KEY
+  
+  "${cmd[@]}"
+  
+  local exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    log "Error: ${SCRIPT} failed with exit code ${exit_code}"
+    exit ${exit_code}
+  fi
+  
+  log "Execution of ${SCRIPT} completed successfully"
 }
 
 main "$@"
