@@ -1,0 +1,170 @@
+Here's a Python script that implements your workflow using the Pixabay API to find and download music tracks:
+
+```python
+import os
+import requests
+import json
+import argparse
+import random
+
+def search_pixabay_audio(api_key, keywords, selection='popularity'):
+    """Search Pixabay audio tracks based on keywords"""
+    base_url = "https://pixabay.com/api/audio/"
+    params = {
+        'key': api_key,
+        'q': keywords,
+        'per_page': 20  # Get more results for better random selection
+    }
+    
+    try:
+        response = requests.get(base_url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data.get('hits'):
+            print("No tracks found matching your keywords.")
+            return None
+            
+        if selection == 'random':
+            track = random.choice(data['hits'])
+        else:  # Default to popularity
+            track = max(data['hits'], key=lambda x: x.get('views', 0))
+            
+        return track
+        
+    except requests.exceptions.RequestException as e:
+        print(f"API request failed: {e}")
+        return None
+
+def download_audio(track, output_dir):
+    """Download MP3 file and save metadata"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    try:
+        # Download audio
+        audio_url = track['download_url']
+        audio_resp = requests.get(audio_url)
+        audio_resp.raise_for_status()
+        
+        # Create filename from title (sanitize for filesystem)
+        title = ''.join(c if c.isalnum() else '_' for c in track['title'])[:50]
+        base_name = f"pixabay_{track['id']}_{title}"
+        audio_path = os.path.join(output_dir, f"{base_name}.mp3")
+        
+        with open(audio_path, 'wb') as f:
+            f.write(audio_resp.content)
+        
+        # Save metadata
+        metadata = {
+            'id': track['id'],
+            'title': track['title'],
+            'artist': track['user'],
+            'license': track['license'],
+            'license_url': track['license_url'],
+            'duration_seconds': track['duration'],
+            'download_url': track['download_url'],
+            'tags': track['tags'],
+            'pixabay_url': track['pageURL']
+        }
+        
+        meta_path = os.path.join(output_dir, f"{base_name}.json")
+        with open(meta_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return audio_path
+        
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return None
+
+def main():
+    parser = argparse.ArgumentParser(description='Download background music from Pixabay')
+    parser.add_argument('output_dir', help='Directory to save audio and metadata')
+    parser.add_argument('--keywords', default='lofi calm night',
+                        help='Search keywords (space separated)')
+    parser.add_argument('--selection', choices=['popularity', 'random'], default='popularity',
+                        help='Track selection method')
+    args = parser.parse_args()
+
+    api_key = os.getenv('PIXABAY_API_KEY')
+    if not api_key:
+        print("Error: PIXABAY_API_KEY environment variable not set")
+        return
+    
+    print(f"Searching Pixabay for: {args.keywords}...")
+    track = search_pixabay_audio(api_key, args.keywords, args.selection)
+    
+    if track:
+        print(f"Found track: '{track['title']}' by {track['user']}")
+        audio_path = download_audio(track, args.output_dir)
+        if audio_path:
+            print(f"Successfully downloaded to: {audio_path}")
+    else:
+        print("Failed to find suitable track")
+
+if __name__ == "__main__":
+    main()
+```
+
+**How to Use:**
+
+1. **Get Pixabay API Key:**
+   - Create a free account at [Pixabay](https://pixabay.com/service/about/api/)
+   - Get your API key from the dashboard
+   - Set environment variable:
+     ```bash
+     export PIXABAY_API_KEY="your-api-key-here"
+     ```
+
+2. **Install Dependencies:**
+   ```bash
+   pip install requests
+   ```
+
+3. **Run the Script:**
+   ```bash
+   python music_downloader.py /path/to/output/directory \
+        --keywords "lofi calm night" \
+        --selection popularity
+   ```
+
+**Features:**
+- Searches Pixabay audio using keywords
+- Selects tracks by popularity (default) or randomly
+- Downloads MP3 to specified directory
+- Saves metadata in JSON sidecar file
+- Sanitizes filenames automatically
+- Handles API errors and empty results
+
+**Output Files:**
+- `pixabay_{id}_{title}.mp3` - Audio file
+- `pixabay_{id}_{title}.json` - Metadata containing:
+  ```json
+  {
+    "id": 123456,
+    "title": "Relaxing Vibes",
+    "artist": "ArtistName",
+    "license": "Creative Commons",
+    "license_url": "https://creativecommons.org/licenses/...",
+    "duration_seconds": 180,
+    "download_url": "https://cdn.pixabay.com/...",
+    "tags": "lofi, calm, relaxation",
+    "pixabay_url": "https://pixabay.com/music/..."
+  }
+  ```
+
+**Notes:**
+1. The script requires a valid Pixabay API key
+2. Output directory will be created if it doesn't exist
+3. Default search terms are "lofi calm night"
+4. Tracks are selected by popularity by default (highest views)
+5. Add `--selection random` for random track selection
+
+**Error Handling:**
+- Fails gracefully for API errors
+- Handles empty search results
+- Validates output directory creation
+- Sanitizes special characters in filenames
+
+To use this with your video workflow, simply point the script to your video project directory and it will download suitable background music with complete attribution metadata.

@@ -1,0 +1,312 @@
+Below is a comprehensive Python script to automate promotional tasks after uploading a new YouTube video. The script prioritizes high-ROE (Return on Effort) tasks with minimal setup/maintenance, leveraging APIs and pre-configured templates.
+
+```python
+import os
+import json
+import requests
+import smtplib
+import schedule
+import time
+from datetime import datetime
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+
+# =============== CONFIGURATION (Edit before use) ===============
+CONFIG = {
+    "youtube_api_key": "YOUR_YOUTUBE_API_KEY",
+    "channel_id": "YOUR_CHANNEL_ID",
+    "video_url": "https://youtube.com/watch?v={video_id}",
+    
+    # Social Media
+    "twitter": {
+        "enabled": True,
+        "api_key": "YOUR_TWITTER_API_KEY",
+        "api_secret": "YOUR_TWITTER_API_SECRET",
+        "access_token": "TWITTER_ACCESS_TOKEN",
+        "access_secret": "TWITTER_ACCESS_SECRET"
+    },
+    
+    "facebook": {
+        "enabled": True,
+        "page_id": "YOUR_FACEBOOK_PAGE_ID",
+        "access_token": "FACEBOOK_ACCESS_TOKEN"
+    },
+    
+    # Email (Mailgun example)
+    "email": {
+        "enabled": True,
+        "mailgun_api_key": "MAILGUN_API_KEY",
+        "mailgun_domain": "YOUR_MAILGUN_DOMAIN",
+        "recipients": ["list@domain.com", "of@subscribers.com"]
+    },
+    
+    # Discord
+    "discord": {
+        "enabled": True,
+        "webhook_url": "DISCORD_WEBHOOK_URL"
+    },
+    
+    # Scheduling
+    "schedule_posts": True,  # Enable time-delayed promotions
+    "schedule_times": ["12:00", "18:00", "20:00"]  # UTC times
+}
+
+MESSAGE_TEMPLATES = {
+    "twitter": "🔥 New video just dropped: {title}!\n\n{url}\n\n{hashtags}",
+    "facebook": "Check out our latest video: {title}\n\n{url}",
+    "discord": "📢 New YouTube video: **{title}**\n{url}",
+    "email_subject": "New Video: {title}",
+    "email_body": """
+    <h1>We just released a new video!</h1>
+    <p><strong>{title}</strong></p>
+    <a href="{url}"><img src="{thumbnail}" width="300"></a>
+    <p>{description}</p>
+    <p><a href="{url}">Watch now →</a></p>
+    """
+}
+
+HASHTAGS = "#YouTube #ContentCreation #YourNiche"
+# =============== END CONFIG ===============
+
+class YouTubeAutomator:
+    def __init__(self, config):
+        self.config = config
+        self.youtube = build('youtube', 'v3', developerKey=config['youtube_api_key'])
+    
+    def get_latest_video(self):
+        """Fetch the channel's most recent upload"""
+        request = self.youtube.search().list(
+            part="snippet",
+            channelId=self.config['channel_id'],
+            maxResults=1,
+            order="date",
+            type="video"
+        )
+        response = request.execute()
+        return response['items'][0]
+    
+    def extract_video_details(self, item):
+        """Extract key video metadata"""
+        snippet = item['snippet']
+        return {
+            "id": item['id']['videoId'],
+            "title": snippet['title'],
+            "description": snippet['description'],
+            "thumbnail": snippet['thumbnails']['high']['url'],
+            "url": self.config['video_url'].format(video_id=item['id']['videoId'])
+        }
+    
+    def post_twitter(self, video):
+        """Share video on Twitter"""
+        if not self.config['twitter']['enabled']:
+            return False
+            
+        import tweepy
+        auth = tweepy.OAuthHandler(
+            self.config['twitter']['api_key'],
+            self.config['twitter']['api_secret']
+        )
+        auth.set_access_token(
+            self.config['twitter']['access_token'],
+            self.config['twitter']['access_secret']
+        )
+        api = tweepy.API(auth)
+        
+        message = MESSAGE_TEMPLATES['twitter'].format(
+            title=video['title'],
+            url=video['url'],
+            hashtags=HASHTAGS
+        )
+        api.update_status(message)
+        return True
+    
+    def post_facebook(self, video):
+        """Share video on Facebook Page"""
+        if not self.config['facebook']['enabled']:
+            return False
+            
+        url = f"https://graph.facebook.com/{self.config['facebook']['page_id']}/feed"
+        params = {
+            "message": MESSAGE_TEMPLATES['facebook'].format(
+                title=video['title'],
+                url=video['url']
+            ),
+            "access_token": self.config['facebook']['access_token'],
+            "link": video['url']
+        }
+        response = requests.post(url, params=params)
+        return response.status_code == 200
+    
+    def send_emails(self, video):
+        """Send notifications via Mailgun"""
+        if not self.config['email']['enabled']:
+            return False
+            
+        for recipient in self.config['email']['recipients']:
+            requests.post(
+                f"https://api.mailgun.net/v3/{self.config['email']['mailgun_domain']}/messages",
+                auth=("api", self.config['email']['mailgun_api_key']),
+                data={
+                    "from": f"YouTube Bot <noreply@{self.config['email']['mailgun_domain']}>",
+                    "to": recipient,
+                    "subject": MESSAGE_TEMPLATES['email_subject'].format(title=video['title']),
+                    "html": MESSAGE_TEMPLATES['email_body'].format(
+                        title=video['title'],
+                        url=video['url'],
+                        thumbnail=video['thumbnail'],
+                        description=video['description'][:200] + "..."
+                    )
+                }
+            )
+        return True
+    
+    def post_discord(self, video):
+        """Notify Discord channel via webhook"""
+        if not self.config['discord']['enabled']:
+            return False
+            
+        message = MESSAGE_TEMPLATES['discord'].format(
+            title=video['title'],
+            url=video['url']
+        )
+        requests.post(
+            self.config['discord']['webhook_url'],
+            json={"content": message}
+        )
+        return True
+    
+    def schedule_future_promotions(self, video):
+        """Setup delayed social posts"""
+        if not self.config['schedule_posts']:
+            return
+            
+        def promotion_task():
+            self.post_twitter(video)
+            self.post_facebook(video)
+        
+        for t in self.config['schedule_times']:
+            schedule.every().day.at(t).do(promotion_task)
+    
+    def execute_all_promotions(self):
+        """Run all enabled promotion workflows"""
+        video_data = self.extract_video_details(self.get_latest_video())
+        
+        # Immediate promotions
+        self.post_twitter(video_data)
+        self.post_facebook(video_data)
+        self.send_emails(video_data)
+        self.post_discord(video_data)
+        
+        # Scheduled promotions
+        self.schedule_future_promotions(video_data)
+        
+        # Keep scheduler running if scheduled tasks exist
+        if self.config['schedule_posts']:
+            while True:
+                schedule.run_pending()
+                time.sleep(60)
+
+if __name__ == "__main__":
+    automator = YouTubeAutomator(CONFIG)
+    automator.execute_all_promotions()
+```
+
+---
+
+### Key Features & High-ROE Tasks Automated:
+
+1. **Social Media Blast**
+   - Auto-post to Twitter (via Tweepy API)
+   - Facebook Page update (Graph API)
+   - Discord notifications (Webhooks)
+   - *ROE*: ⭐⭐⭐⭐⭐ (Massive reach, <1 min effort)
+
+2. **Email Campaigns**
+   - Bulk email to subscribers (Mailgun API)
+   - Responsive HTML templates with thumbnails
+   - *ROE*: ⭐⭐⭐⭐ (Direct audience reach, 2 min setup)
+
+3. **Scheduled Re-Promotion**
+   - Automatic time-delayed reposts (using `schedule`)
+   - Daily reminders at peak engagement times
+   - *ROE*: ⭐⭐⭐⭐ (Recursive visibility, zero effort)
+
+4. **Dynamic Content Generation**
+   - Auto-fetches video title/description/thumbnail
+   - Customizable templates with {placeholders}
+   - Smart description truncation
+
+---
+
+### Setup Instructions:
+
+1. **Prerequisites**:
+   ```bash
+   pip install google-api-python-client requests tweepy schedule
+   ```
+
+2. **API Setup**:
+   - [YouTube Data API](https://console.cloud.google.com/apis/library/youtube.googleapis.com)
+   - [Twitter Developer Portal](https://developer.twitter.com/)
+   - [Facebook Graph API](https://developers.facebook.com/)
+   - [Mailgun Account](https://www.mailgun.com/)
+   - Discord Webhook (Channel Settings > Integrations)
+
+3. **Configuration**:
+   - Fill all API keys in `CONFIG` section
+   - Customize message templates and hashtags
+   - Add email recipients and Discord webhook URL
+
+4. **Execution**:
+   - Run manually after uploads: `python youtube_promoter.py`
+   - Add to CI/CD pipeline for auto-trigger
+   - Set cron job for scheduled promotions
+
+---
+
+### High-Value Customizations:
+
+1. **Add Platforms**:
+   ```python
+   # LinkedIn Example
+   def post_linkedin(self, video):
+       # Implement using https://learn.microsoft.com/en-us/linkedin/
+       pass
+   ```
+
+2. **Analytics Integration**:
+   ```python
+   # Add to execute_all_promotions()
+   self.track_engagement(video_data)
+   ```
+
+3. **Comment Automation**:
+   ```python
+   def respond_to_comments(self):
+       # Use youtube.commentThreads.list
+       # Auto-reply to first 10 comments
+   ```
+
+4. **Cross-Platform Clips**:
+   ```python
+   def create_shorts(self):
+       # Use moviepy to auto-generate clips
+       # Upload to TikTok/Instagram Reels
+   ```
+
+---
+
+### Effort vs. Return Analysis:
+
+| Task                  | Effort Cost | ROE Score | Automation Level |
+|-----------------------|-------------|-----------|------------------|
+| Social Media Posts    | 1           | 9         | Full             |
+| Email Campaigns       | 2           | 8         | Full             |
+| Scheduled Reposts     | 1           | 7         | Full             |
+| Comment Engagement    | 3           | 5         | Partial          |
+| Shorts Creation       | 4           | 4         | Partial          |
+| Community Outreach    | 5           | 3         | Manual           |
+
+---
+
+**Note**: Always comply with platform TOS. Add error handling and rate-limiting in production. Store credentials securely (consider using `python-dotenv` for secrets management).
