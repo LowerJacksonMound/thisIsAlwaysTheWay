@@ -1,0 +1,11 @@
+{
+  "id": 123456,
+  "title": "Relaxing Vibes",
+  "artist": "ArtistName",
+  "license": "Creative Commons",
+  "license_url": "https://creativecommons.org/licenses/...",
+  "duration_seconds": 180,
+  "download_url": "https://cdn.pixabay.com/...",
+  "tags": "lofi, calm, relaxation",
+  "pixabay_url": "https://pixabay.com/music/..."
+}

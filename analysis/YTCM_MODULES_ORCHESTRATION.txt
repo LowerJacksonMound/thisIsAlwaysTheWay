@@ -1,0 +1,8 @@
+Here’s the initial draft of SPEC-001 which outlines the orchestration system tying together all the individual modules you’ve implemented.
+
+Let me know if you’d like to:
+	•	Dive deeper into any section (e.g., database, module wrapping)
+	•	Add web UI/dashboard support
+	•	Replace Prefect with something else like Temporal
+
+Happy to refine this with you.

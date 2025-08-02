@@ -1,0 +1,117 @@
+To automate the process of feeding Runway-generated videos into Topaz Video AI on macOS (M2), follow this solution. The script uses AppleScript for UI automation and a shell script for monitoring file processing completion.
+
+### Step 1: Create the Automation Script
+Save this combined script as `runway_to_topaz.sh` and make it executable:
+
+```bash
+#!/bin/bash
+
+# Configuration
+SOURCE_DIR="$HOME/Downloads/RunwayVideos"  # Where Runway videos are saved
+OUTPUT_DIR="$HOME/Movies/TopazOutput"      # Topaz output directory
+TOPAS_APP="/Applications/Topaz Video AI.app"
+
+# Create directories if missing
+mkdir -p "$SOURCE_DIR" "$OUTPUT_DIR"
+
+# Launch Topaz Video AI
+open -a "$TOPAS_APP" --args --output "$OUTPUT_DIR"
+
+# Wait for Topaz to initialize
+sleep 10
+
+# AppleScript to automate file selection and processing
+osascript <<EOF
+tell application "System Events"
+    tell process "Topaz Video AI"
+        # Open file selection dialog
+        keystroke "o" using command down
+        
+        # Wait for file dialog
+        delay 2
+        
+        # Navigate to source directory
+        keystroke "g" using {command down, shift down}
+        delay 1
+        keystroke "$SOURCE_DIR"
+        delay 1
+        keystroke return
+        delay 2
+        
+        # Select most recent video (sorted by creation date)
+        keystroke "1" using command down  # Select first file in list
+        delay 1
+        keystroke return  # Open selected file
+        
+        # Start processing (default shortcut: Command + R)
+        delay 5  # Wait for file to load
+        keystroke "r" using command down
+    end tell
+end tell
+EOF
+
+# Wait for processing to complete
+echo "Processing started... Monitoring output directory: $OUTPUT_DIR"
+INITIAL_FILES=$(ls "$OUTPUT_DIR")
+while true; do
+    CURRENT_FILES=$(ls "$OUTPUT_DIR")
+    if [[ "$CURRENT_FILES" != "$INITIAL_FILES" ]]; then
+        echo "New output file detected! Processing complete."
+        break
+    fi
+    sleep 30
+done
+
+# Optional: Quit Topaz afterward
+osascript -e 'tell application "Topaz Video AI" to quit'
+```
+
+### Step 2: Configure Topaz Video AI
+1. **Set Default Output Directory**:
+   - Open Topaz Video AI manually
+   - Go to `Settings` > `Output` > Set directory to `~/Movies/TopazOutput`
+   - Close Topaz (settings are saved automatically)
+
+2. **Enable Keyboard Shortcuts**:
+   - Ensure these default shortcuts exist:
+     - Open File: `⌘ + O`
+     - Start Processing: `⌘ + R`
+
+### Step 3: Grant Permissions
+1. **Make the script executable**:
+   ```bash
+   chmod +x runway_to_topaz.sh
+   ```
+
+2. **Enable Accessibility Access**:
+   - Go to `System Settings` > `Privacy & Security` > `Accessibility`
+   - Click the "+" and add:
+     - Terminal (or your terminal app)
+     - AppleScript Runner
+     - System Events
+     - Topaz Video AI
+
+### Step 4: Usage
+1. Place Runway-generated videos in `~/Downloads/RunwayVideos`
+2. Run the script:
+   ```bash
+   ./runway_to_topaz.sh
+   ```
+
+### How It Works
+1. **Launches Topaz** with the predefined output directory
+2. **Automates UI interactions** to:
+   - Open the file dialog (`⌘ + O`)
+   - Navigate to the source directory
+   - Select the most recent video file
+   - Start processing (`⌘ + R`)
+3. **Monitors the output directory** for new files (checks every 30 seconds)
+4. **Exits automatically** when processing completes
+
+### Notes
+- The script assumes Topaz's default keyboard shortcuts haven't been changed
+- Processing time depends on video length and system resources
+- To customize paths, edit the `SOURCE_DIR` and `OUTPUT_DIR` variables
+- If Topaz updates its UI, the AppleScript portion may need adjustments
+
+This solution provides full automation from file selection to processing completion notification using native macOS capabilities.

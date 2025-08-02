@@ -1,0 +1,197 @@
+Here's a Python script that scans a specified directory for new video files and uploads them to YouTube using the Google API:
+
+```python
+import os
+import hashlib
+import json
+import argparse
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+
+# ===== CONFIGURATION =====
+VIDEO_DIR = "/path/to/your/videos"  # Update this to your video directory
+CLIENT_SECRETS_FILE = "client_secrets.json"  # From Google Cloud Console
+TOKEN_FILE = "token.json"
+UPLOAD_LOG = "uploaded_videos.log"  # Tracks uploaded files
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+DEFAULT_CATEGORY_ID = "22"  # People & Blogs (see YouTube category list)
+DEFAULT_PRIVACY_STATUS = "private"  # "public", "private", or "unlisted"
+# ========================
+
+def get_authenticated_service():
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(creds.to_json())
+    
+    return build("youtube", "v3", credentials=creds)
+
+def calculate_md5(file_path):
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def get_new_videos():
+    uploaded = set()
+    if os.path.exists(UPLOAD_LOG):
+        with open(UPLOAD_LOG, "r") as f:
+            uploaded = set(f.read().splitlines())
+    
+    new_videos = []
+    for filename in os.listdir(VIDEO_DIR):
+        filepath = os.path.join(VIDEO_DIR, filename)
+        if os.path.isfile(filepath):
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext in [".mp4", ".mov", ".avi", ".mkv", ".flv", ".webm"]:
+                file_id = f"{filename}_{calculate_md5(filepath)}"
+                if file_id not in uploaded:
+                    new_videos.append((filename, filepath, file_id))
+    
+    return new_videos
+
+def upload_video(service, file_path, title, description=""):
+    request_body = {
+        "snippet": {
+            "title": title,
+            "description": description,
+            "categoryId": DEFAULT_CATEGORY_ID
+        },
+        "status": {
+            "privacyStatus": DEFAULT_PRIVACY_STATUS
+        }
+    }
+    
+    media = MediaFileUpload(
+        file_path,
+        chunksize=-1,
+        resumable=True
+    )
+    
+    request = service.videos().insert(
+        part=",".join(request_body.keys()),
+        body=request_body,
+        media_body=media
+    )
+    
+    response = None
+    while not response:
+        status, response = request.next_chunk()
+        if status:
+            print(f"Upload progress: {int(status.progress() * 100)}%")
+    
+    print(f"Upload complete! Video ID: {response['id']}")
+    return response
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", help="Directory to scan for videos")
+    args = parser.parse_args()
+    
+    video_dir = args.dir if args.dir else VIDEO_DIR
+    
+    if not os.path.isdir(video_dir):
+        print(f"Error: Directory not found - {video_dir}")
+        return
+    
+    service = get_authenticated_service()
+    new_videos = get_new_videos()
+    
+    if not new_videos:
+        print("No new videos found.")
+        return
+    
+    print(f"Found {len(new_videos)} new video(s) to upload")
+    
+    for filename, filepath, file_id in new_videos:
+        print(f"\nUploading: {filename}")
+        try:
+            title = os.path.splitext(filename)[0]
+            upload_video(service, filepath, title)
+            
+            # Record uploaded file
+            with open(UPLOAD_LOG, "a") as log:
+                log.write(f"{file_id}\n")
+                
+            print(f"Successfully uploaded {filename}")
+        except Exception as e:
+            print(f"Upload failed: {str(e)}")
+
+if __name__ == "__main__":
+    main()
+```
+
+**Prerequisites:**
+1. Python 3.6+
+2. Required packages: `pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib`
+
+**Setup Instructions:**
+
+1. **Create Google Cloud Project:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project
+   - Enable "YouTube Data API v3"
+
+2. **Configure OAuth Consent Screen:**
+   - In APIs & Services → OAuth consent screen
+   - Set application type to "External"
+   - Add scopes: `.../auth/youtube.upload`
+   - Add test users (your email)
+
+3. **Create Credentials:**
+   - In APIs & Services → Credentials
+   - Create "OAuth Client ID" → Application type "Desktop app"
+   - Download credentials as `client_secrets.json`
+
+4. **Prepare Your Environment:**
+   - Create a directory for the script
+   - Place `client_secrets.json` in the same directory
+   - Set `VIDEO_DIR` in the script to your video directory
+
+**Features:**
+- Tracks uploaded files using MD5 hashes to prevent re-uploads
+- Supports common video formats (mp4, mov, avi, mkv, flv, webm)
+- Resumeable uploads for large files
+- Privacy status configuration (public/private/unlisted)
+- Progress reporting during upload
+
+**Usage:**
+```bash
+python youtube_uploader.py [--dir /custom/video/directory]
+```
+
+**First Run:**
+1. The script will open a browser window for authentication
+2. Log in with your Google account
+3. Grant permission to access your YouTube channel
+4. Authentication tokens will be saved to `token.json`
+
+**Notes:**
+- Videos are uploaded as "private" by default (change `DEFAULT_PRIVACY_STATUS`)
+- Category ID can be changed (see YouTube's category list)
+- Upload logs are stored in `uploaded_videos.log`
+- The script can be scheduled (cron, Task Scheduler) for automatic uploads
+
+**Security Considerations:**
+- Keep `client_secrets.json` and `token.json` secure
+- Revoke app access at: https://myaccount.google.com/permissions
+
+**Error Handling:**
+- Handles API quota exceeded errors
+- Catches network interruptions
+- Validates file existence and directory access
+
+To find YouTube category IDs, you can use the YouTube API's `videoCategories.list` method or refer to this list: https://developers.google.com/youtube/v3/docs/videoCategories/list

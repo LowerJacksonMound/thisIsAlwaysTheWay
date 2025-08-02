@@ -1,0 +1,281 @@
+Here's the enhanced script with your requested features added:
+
+```python
+import os
+import re
+import subprocess
+import base64
+import glob
+import json
+import cv2
+import numpy as np
+from openai import OpenAI
+
+# Configuration
+MAX_VIDEOS = 5
+FRAME_INTERVAL = 5  # Capture frame every 5 seconds
+START_OFFSET = 15   # Skip first 15 seconds
+DURATION = 120      # Process next 120 seconds (2 minutes)
+RESOLUTION = "768:-2"  # Width 768px, height auto (maintain aspect ratio)
+OPENAI_MODEL = "gpt-4-vision-preview"
+COOKIES_BROWSER = "chrome"
+
+def download_videos(urls):
+    os.makedirs("videos", exist_ok=True)
+    downloaded = []
+    
+    for url in urls[:MAX_VIDEOS]:
+        try:
+            output = f"videos/%(id)s.%(ext)s"
+            cmd = [
+                "yt-dlp",
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--cookies-from-browser", COOKIES_BROWSER,
+                "-o", output,
+                "--no-playlist",
+                url
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            
+            # Get downloaded filename
+            video_id = re.search(r'v=([\w-]+)', url).group(1)
+            downloaded.append(f"videos/{video_id}.mp4")
+            print(f"✅ Downloaded: {url}")
+            
+        except Exception as e:
+            print(f"❌ Download failed for {url}: {str(e)}")
+    
+    return downloaded
+
+def get_video_rotation(video_path):
+    """Detect video rotation metadata using ffprobe"""
+    try:
+        cmd = [
+            "ffprobe",
+            "-loglevel", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream_tags=rotate",
+            "-of", "default=nw=1:nk=1",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        rotation = result.stdout.strip()
+        return int(rotation) if rotation.isdigit() else 0
+    except:
+        return 0
+
+def rotate_image(image_path, rotation):
+    """Rotate image based on EXIF orientation"""
+    if rotation == 0:
+        return
+    
+    img = cv2.imread(image_path)
+    if img is None:
+        return
+    
+    # Apply rotation
+    if rotation == 90:
+        rotated = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    elif rotation == 180:
+        rotated = cv2.rotate(img, cv2.ROTATE_180)
+    elif rotation == 270:
+        rotated = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    else:
+        return
+    
+    cv2.imwrite(image_path, rotated)
+
+def extract_frames(video_path):
+    video_id = os.path.basename(video_path).split('.')[0]
+    output_dir = f"frames/{video_id}"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get video rotation metadata
+    rotation = get_video_rotation(video_path)
+    
+    try:
+        cmd = [
+            "ffmpeg",
+            "-ss", str(START_OFFSET),  # Start at 15 seconds
+            "-i", video_path,
+            "-t", str(DURATION),      # Capture 120 seconds
+            "-vf", f"fps=1/{FRAME_INTERVAL},scale={RESOLUTION}",
+            "-q:v", "2",
+            f"{output_dir}/frame_%04d.jpg"
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        # Get extracted frames
+        frames = sorted(glob.glob(f"{output_dir}/*.jpg"))
+        
+        # Apply rotation correction if needed
+        if rotation:
+            print(f"🔄 Detected rotation: {rotation}° - Correcting frames...")
+            for frame in frames:
+                rotate_image(frame, rotation)
+        
+        print(f"🖼️ Extracted {len(frames)} frames from {video_path}")
+        return frames
+        
+    except Exception as e:
+        print(f"❌ Frame extraction failed for {video_path}: {str(e)}")
+        return []
+
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
+
+def analyze_frames(frames, is_multi_video=False):
+    client = OpenAI()
+    
+    # Prepare system prompt
+    if is_multi_video:
+        system_prompt = ("Analyze these frames from multiple videos and create a single comprehensive prompt "
+                         "that captures their common visual characteristics. Consider styles, colors, subjects, "
+                         "composition, artistic elements, lighting, and mood. The prompt should be detailed "
+                         "enough to recreate the visual style in an AI image generator.")
+    else:
+        system_prompt = ("Reverse-engineer the AI generation prompt that could create this video. "
+                         "Include visual style, key elements, composition techniques, color palette, "
+                         "lighting conditions, artistic influences, and any distinctive features. "
+                         "The prompt should be detailed and specific.")
+    
+    # Build message content
+    content = [{"type": "text", "text": system_prompt}]
+    
+    # Select frames to send (max 24 due to API constraints)
+    selected_frames = []
+    if len(frames) > 24:
+        step = max(1, len(frames) // 24)
+        selected_frames = frames[::step][:24]
+    else:
+        selected_frames = frames[:24]
+    
+    for frame in selected_frames:
+        base64_image = encode_image(frame)
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{base64_image}",
+                "detail": "high"
+            }
+        })
+    
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=800,
+            temperature=0.2
+        )
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        print(f"❌ GPT-4 analysis failed: {str(e)}")
+        return None
+
+def main():
+    # Read URLs from file
+    with open("urls.txt", "r") as f:
+        urls = [line.strip() for line in f.readlines() if line.strip()]
+    
+    if not urls:
+        print("❌ No URLs found in urls.txt")
+        return
+    
+    print(f"🔍 Found {len(urls)} URLs in input file")
+    
+    # Download videos
+    video_files = download_videos(urls)
+    if not video_files:
+        print("❌ No videos downloaded successfully")
+        return
+    
+    # Process videos and collect frames
+    all_frames = []
+    for video in video_files:
+        frames = extract_frames(video)
+        if frames:
+            all_frames.extend(frames)
+    
+    if not all_frames:
+        print("❌ No frames extracted successfully")
+        return
+    
+    # Analyze frames with GPT-4
+    print("🧠 Analyzing frames with GPT-4 Vision...")
+    is_multi = len(video_files) > 1
+    prompt = analyze_frames(all_frames, is_multi)
+    
+    if prompt:
+        print("\n🎉 REVERSE-ENGINEERED PROMPT:")
+        print(prompt)
+        
+        # Save to file
+        with open("output_prompt.txt", "w") as f:
+            f.write(prompt)
+        print("\n💾 Prompt saved to output_prompt.txt")
+    else:
+        print("❌ Failed to generate prompt")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Key Enhancements:
+
+1. **Initial Content Skip (15 seconds):**
+   - Added `START_OFFSET = 15` to skip the first 15 seconds
+   - Modified ffmpeg command: `"-ss", str(START_OFFSET)`
+   - Ensures frame extraction starts after intro/ads
+
+2. **Rotation Detection & Correction:**
+   - Added `get_video_rotation()` function using ffprobe to detect rotation metadata
+   - Created `rotate_image()` function using OpenCV to correct orientation
+   - Automatic correction applied during frame processing
+   - Supports all common rotations (90°, 180°, 270°)
+
+3. **Improved Prompt Engineering:**
+   - Enhanced system prompts for more detailed analysis
+   - Added parameters for better output quality:
+     - `max_tokens=800` for more detailed prompts
+     - `temperature=0.2` for more focused responses
+   - Frame selection optimized for API constraints
+
+4. **Optimized Frame Processing:**
+   - Better frame sampling algorithm when >24 frames
+   - Maintains temporal distribution of frames
+   - Reduced API costs while preserving context
+
+### Requirements Update:
+1. Install additional dependency:
+```bash
+pip install opencv-python-headless numpy
+```
+
+2. Ensure ffprobe is available (comes with ffmpeg installation)
+
+### How the Rotation Correction Works:
+1. **Detection:**
+   - Uses `ffprobe` to read rotation metadata from video
+   - Handles 90°, 180°, and 270° rotations
+
+2. **Correction:**
+   - Uses OpenCV to physically rotate each frame
+   - Maintains original image quality
+   - Applies rotation before sending to GPT-4
+
+### Usage Notes:
+1. The script now:
+   - Skips first 15 seconds of each video
+   - Automatically corrects rotated videos
+   - Generates more detailed prompts
+   - Better handles API limitations
+
+2. For best results:
+   - Ensure OpenCV is properly installed
+   - Verify ffmpeg/ffprobe are in system PATH
+   - Use high-quality source videos
+   - Videos with clear visual styles work best
+
+The enhanced script addresses both the initial content skip and rotation issues while maintaining all previous functionality and improving the prompt generation quality.
